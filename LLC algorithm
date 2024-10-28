@@ -1,0 +1,91 @@
+import sys
+from fpylll import IntegerMatrix, LLL
+from base64 import b64decode as b64d
+from ec import *  # Make sure this includes secp256k1 implementation
+
+curve = CurveJac(CURVES['secp256k1'])
+n = curve.order
+
+# Update with your secp256k1 coefficients
+a0, a1, b0, b1, c0, c1 = 0, 0, 7, 0, 1, 0
+
+# LLL Attack remains similar with adjustments for secp256k1
+def construct_matrix(r, s):
+    ell = 64
+    K = 2**128
+    M = IntegerMatrix(29, 29)
+
+    M[0, 0] = n
+    M[27, 0] = r
+    M[28, 0] = -s
+    for i in range(8):
+        M[i + 3, 0] = 2**((7 - i)*8) * 2**(3*ell)
+        M[i + 11, 0] = 2**((7 - i)*8) * (2**(2*ell) + 2**ell)
+        M[i + 19, 0] = 2**((7 - i)*8)
+
+    # Update equations for secp256k1
+    M[1, 1] = 2**ell
+    M[28, 1] = c0
+    for i in range(8):
+        M[i + 3, 1] = -2**(i*8)
+        M[i + 19, 1] = 2**(i*8) * c1
+
+    M[2, 2] = 2**ell
+    M[28, 2] = b0
+    for i in range(8):
+        M[i + 11, 2] = -2**(i*8)
+        M[i + 19, 2] = 2**(i*8) * b1
+
+    for i in range(M.nrows):
+        for j in range(M.ncols):
+            M[i, j] = K * M[i, j]
+    for i in range(24):
+        M[i + 3, i + 3] = K // 2**8
+    M[27, 27] = 1
+    M[28, 28] = K
+
+    return M
+
+def find_key(r, s, curve, pubkey):
+    found = False
+    M = construct_matrix(r, s)
+    LLL.reduction(M)
+    for i in range(M.nrows):
+        privkey = M[i, -2]
+        Q = curve.scalar_mult(privkey, curve.base)
+        if Q[0] == pubkey[0]:
+            found = True
+            if Q[1] == -pubkey[1]:
+                privkey = -privkey
+            return privkey
+    return None
+
+if __name__ == '__main__':
+    if len(sys.argv) != 2:
+        print('Usage: script.py <signature_in_hex>')
+        sys.exit()
+
+    sig_hex = sys.argv[1]
+    sig_bytes = bytes.fromhex(sig_hex)
+
+    # Extract r and s from DER signature format
+    r = int.from_bytes(sig_bytes[4:4+32], 'big')
+    s = int.from_bytes(sig_bytes[4+33:4+33+32], 'big')
+
+    # Replace the public key with the correct one
+    pubkey_hex = "0220fe042d996b5aec4a8ed82b41e84d8715dfb89f60460644bafd4e63453af296" 
+    pubkey_bytes = bytes.fromhex(pubkey_hex)
+    xq = int.from_bytes(pubkey_bytes[1:33], 'big')
+    yq = curve.solve_y(xq)  # Use the curve to find y-coordinate
+
+    if not curve.is_on_curve((xq, yq)):
+        print('Invalid public key.')
+        sys.exit()
+
+    pubkey = (curve.field(xq), curve.field(yq))
+
+    privkey = find_key(r, s, curve, pubkey)
+if privkey is None:
+    print('Private key not found')
+else:
+    print(f'Private key: {hex(privkey)}')
